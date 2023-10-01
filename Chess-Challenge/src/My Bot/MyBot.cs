@@ -1,6 +1,6 @@
-﻿using ChessChallenge.API;
-using System;
+﻿using System;
 using System.Numerics;
+using ChessChallenge.API;
 
 public class MyBot : IChessBot
 {
@@ -21,14 +21,14 @@ public class MyBot : IChessBot
             zobristHash = zhash;
             evaluation = eval;
             depth = d;
-            flag = INVALID;
+            flag = -2;
             move = m;
         }
         public Move move;
         public ulong zobristHash = 0;
         public int evaluation = 0;
         public byte depth = 0;
-        public sbyte flag = INVALID;
+        public sbyte flag = -2;
     }
 
     static ulong Transposition_Mask = 0x7FFFFF;
@@ -61,76 +61,6 @@ public class MyBot : IChessBot
         return eval;
     }
 
-    // Search the move tree for the optimal path
-    int alphaBeta(Board board, int alpha, int beta, int ply, int depth)
-    {
-        // End of game scenarios
-        if (board.IsInCheckmate()) return -9999995 + depth;
-        if (board.IsDraw()) return 0;
-
-        // Transposition table
-        //ref Transposition transposition = ref TranspositionTable[board.ZobristKey & 0x7FFFFF];
-        //if (transposition.zobristHash == board.ZobristKey && transposition.depth >= ply - depth && transposition.flag != 0)
-        //{
-        //    Console.WriteLine("Using a valid transposition table entry");
-        //    // In between bounds (a > score > b)
-        //    if (transposition.flag == EXACT) return transposition.evaluation;
-        //    // Lower bound but still better than current beta
-        //    if (transposition.flag == LOWERBOUND && transposition.evaluation >= beta) return transposition.evaluation;
-        //    // Upper bound but not above current alpha
-        //    if (transposition.flag == UPPERBOUND && transposition.evaluation <= alpha) return transposition.evaluation;
-        //}
-
-        // Variable initialization
-        bool DepthIsZero = depth == 0;
-        //int startingAlpha = alpha;
-        int score = 0;
-
-        // Do a quiescence check if we are at a leaf node
-        if (depth == ply) return quiesce(board, alpha, beta, depth, ply);
-
-        Move[] legalMoves = board.GetLegalMoves();
-        int[] scores = new int[legalMoves.Length];
-        for (int i = 0; i < legalMoves.Length; i++) scores[i] = mvvlva(legalMoves[i]);
-        Array.Sort(scores, legalMoves);
-        Array.Reverse(legalMoves);
-        // Loop through each move to determine its quality
-        foreach (Move move in legalMoves)
-        {
-            //score = 0;
-            board.MakeMove(move);
-            nodes++; // #DEBUG
-            score = -alphaBeta(board, -beta, -alpha, ply, depth + 1);
-            board.UndoMove(move);
-            if (score >= beta)
-            {
-                return score;
-            }
-            if (score > alpha)
-            {
-                alpha = score;
-                if (DepthIsZero)
-                {
-                    currentBestMove = move;
-                    currentBestEvaluation = score;
-                    //Console.WriteLine("New best move!"); // #DEBUG
-                }
-            }
-        }
-
-        //transposition.evaluation = alpha;
-        //transposition.zobristHash = board.ZobristKey;
-        //if (alpha < startingAlpha)
-        //    transposition.flag = UPPERBOUND;
-        //else if (alpha >= beta)
-        //    transposition.flag = LOWERBOUND;
-        //else transposition.flag = EXACT;
-        //transposition.depth = (byte)(ply - depth);
-
-        return score;
-
-    }
-
     int search(Board board, int alpha, int beta, int ply, int depth, int extensionsLeft, bool qsearch)
     {
         // end of game scenarios
@@ -138,7 +68,6 @@ public class MyBot : IChessBot
         if (board.IsDraw()) return 0;
 
         // variables
-        bool depthZero = depth == 0;
         int score = -9999999;
         bool isCheck = board.IsInCheck();
 
@@ -148,9 +77,38 @@ public class MyBot : IChessBot
         for (int i = 0; i < legalMoves.Length; i++) scores[i] = mvvlva(legalMoves[i]);
         Array.Sort(scores, legalMoves);
         Array.Reverse(legalMoves);
+        int eval = boardEval(board, depth);
+
+        if (eval < alpha - (100 * depth)) return eval;
+
+        if (qsearch)
+        {
+            if (eval > beta) return beta;
+            if (eval > alpha) alpha = eval;
+        }
+
+        foreach (Move move in legalMoves)
+        {
+            board.MakeMove(move);
+            if (!qsearch || move.IsCapture || move.IsPromotion || isCheck || (board.IsInCheck() && extensionsLeft > 0))
+            {
+                nodes++; // #DEBUG
+                if (qsearch) qnodes++; // #DEBUG
+                score = -search(board, -beta, -alpha, ply, depth + 1, extensionsLeft - (board.IsInCheck() && qsearch ? 1 : 0), depth+1 >= ply);
+            }
+            board.UndoMove(move);
+            if (score >= beta) return beta;
+            if (score > alpha)
+            {
+                alpha = score;
+                if (depth == 0) currentBestMove = move;
+            }
+        }
+
+        return qsearch ? alpha : score;
 
         // expand the search tree
-        if (qsearch)
+        /*if (qsearch)
         {
             int eval = boardEval(board, depth);
             if (eval > beta) return beta;
@@ -178,7 +136,7 @@ public class MyBot : IChessBot
             {
                 board.MakeMove(move);
                 nodes++;
-                score = -search(board, -beta, -alpha, ply, depth + 1, 2, depth == ply);
+                score = -search(board, -beta, -alpha, ply, depth + 1, 2, depth+1 >= ply);
                 board.UndoMove(move);
                 if (score >= beta) return beta;
                 if (score > alpha)
@@ -192,63 +150,10 @@ public class MyBot : IChessBot
                 }
             }
         }
-        return score;
+        return score;*/
     }
 
     int mvvlva(Move move) { return (int)move.CapturePieceType * 100 - (int)move.MovePieceType; }
-
-    // Deal with tactically complex positions
-    int quiesce(Board board, int alpha, int beta, int depth, int extensionsLeft)
-    {
-        if (board.IsInCheckmate()) return -9999995 + depth;
-        if (board.IsDraw()) return 0;
-        int stand_pat = boardEval(board, depth);
-        int score = -9999999;
-        if (stand_pat > beta)
-            return beta;
-        if (alpha < stand_pat)
-            alpha = stand_pat;
-
-        bool isCheck = board.IsInCheck();
-        Move[] legalMoves = board.GetLegalMoves();
-        int[] scores = new int[legalMoves.Length];
-        for (int i = 0; i < legalMoves.Length; i++) scores[i] = mvvlva(legalMoves[i]);
-        Array.Sort(scores, legalMoves);
-        Array.Reverse(legalMoves);
-        foreach (Move qmove in legalMoves)
-        {
-            board.MakeMove(qmove);
-            if (qmove.IsCapture || qmove.IsPromotion || isCheck || (board.IsInCheck() && extensionsLeft > 0)) {
-                nodes++; // #DEBUG
-                qnodes++; // #DEBUG
-                score = -quiesce(board, -beta, -alpha, depth+1, extensionsLeft - (board.IsInCheck()?1:0));
-            }
-            board.UndoMove(qmove);
-            //if (qmove.IsCapture || qmove.IsPromotion)
-            //{
-            //    board.MakeMove(qmove);
-            //    score = actualQcheck(board, alpha, beta, ++depth, extensionsLeft);
-            //    board.UndoMove(qmove);
-            //}
-            //else
-            //{
-            //    board.MakeMove(qmove);
-            //    if (board.IsInCheck() && extensionsLeft > 0) score = actualQcheck(board, alpha, beta, ++depth, extensionsLeft - 1);
-            //    board.UndoMove(qmove);
-            //}
-
-            if (score >= beta)
-            {
-                //        board.UndoMove(qmove);
-                return beta;
-            }
-            if (score > alpha)
-                alpha = score;
-            //}
-            //board.UndoMove(qmove);
-        }
-        return alpha;
-    }
 
     // Returns the move decided to be the best (this is the function that will be called by the rest of the program)
     public Move Think(Board board, Timer timer)
@@ -258,9 +163,11 @@ public class MyBot : IChessBot
         qnodes = 0; // #DEBUG
         for (int i = 1; i < 6; i++)
         {
-            Console.WriteLine("starting search at ply = " + i);
-            //search(board, -9999999, 9999999, i, 0, 2, false);
-            alphaBeta(board, -9999999, 9999999, i, 0);
+            Console.WriteLine("starting search at ply = " + i); // #DEBUG
+            currentBestEvaluation = search(board, -9999999, 9999999, i, 0, 2, false);
+            Console.WriteLine(currentBestEvaluation + " is the evaluation after this ply"); // #DEBUG
+            Console.WriteLine(currentBestMove + " is the best move after this ply"); // #DEBUG
+            Console.WriteLine(nodes + " is the total amount of nodes after this ply"); // #DEBUG
             //if (timer.MillisecondsElapsedThisTurn > 2500) break;
         }
 
